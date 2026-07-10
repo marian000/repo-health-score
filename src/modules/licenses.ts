@@ -126,12 +126,46 @@ export const licensesModule: ScanModule = {
       0,
     );
 
-    return scored(
-      100 - penalty,
-      conflicts.map((conflict) => toFinding(conflict, projectLicense)),
-    );
+    return scored(100 - penalty, [
+      ...conflicts.map((conflict) => toFinding(conflict, projectLicense)),
+      ...scans.filter(isUnavailable).map(toSkippedFinding),
+    ]);
   },
 };
+
+/**
+ * One ecosystem could not be read, but another could.
+ *
+ * Scoring on what was read is right; presenting it as complete is not. A project
+ * with both a package.json and a composer.json, whose npm tree is permissive and
+ * whose uninstalled PHP tree hides an AGPL package, would otherwise be told its
+ * licenses are clean. This finding carries no penalty and says which half was
+ * skipped.
+ */
+function toSkippedFinding(scan: {
+  readonly reason: string;
+  readonly hint: string;
+}): Finding {
+  return {
+    severity: 'info',
+    problem: `Not checked: ${scan.reason}`,
+    fix: scan.hint,
+  };
+}
+
+function isUnavailable<T>(
+  scan: EcosystemScan<T>,
+): scan is Extract<EcosystemScan<T>, { status: 'unavailable' }> {
+  return scan.status === 'unavailable';
+}
+
+/** The first non-empty line, for turning a tool's stderr into a one-line reason. */
+function firstLine(text: string): string | undefined {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line !== '');
+}
 
 /**
  * `composer licenses --format=json` reports every installed package's license.
@@ -139,15 +173,43 @@ export const licensesModule: ScanModule = {
  * This is deliberately not `licensee`: that tool identifies the *repository's
  * own* license from its LICENSE file — a different question — and is a Ruby
  * gem, which would break the zero-config promise.
+ *
+ * The installed-package manifest has to exist first, and its absence is
+ * unavailable rather than empty. Composer has no lockfile mode for this command:
+ * with nothing installed it reports `"dependencies": []` and exits 0 — a clean
+ * bill of health, phrased identically to a project that genuinely depends on
+ * nothing copyleft. That silence is the whole reason this check is here.
+ *
+ * The check is on `vendor/composer/installed.json` rather than on `vendor/`,
+ * because an empty `vendor/` directory produces exactly the same false all-clear
+ * as a missing one, and `vendor/` is easy to create by accident. `installed.json`
+ * is the file Composer actually reads.
+ *
+ * Even then the result is a floor, not a guarantee: Composer omits any package
+ * whose `install-path` directory is missing, so a half-deleted `vendor/` yields
+ * a short license list and exit 0. Detecting that reliably would mean
+ * reimplementing Composer's installer, which is the opposite of wrapping it.
  */
 async function listComposerConflicts(
   context: ScanContext,
 ): Promise<EcosystemScan<Conflict>> {
+  if (
+    !(await exists(
+      join(context.repoRoot, 'vendor', 'composer', 'installed.json'),
+    ))
+  ) {
+    return unavailable(
+      'Composer packages are not installed, so transitive PHP licenses could not be resolved',
+      'Run `composer install` before scanning.',
+    );
+  }
+
   context.log('Reading Composer dependency licenses…');
 
   let stdout: string;
+  let stderr: string;
   try {
-    ({ stdout } = await run(
+    ({ stdout, stderr } = await run(
       'composer',
       ['licenses', '--format=json', '--no-interaction', ...COMPOSER_SANDBOX],
       { cwd: context.repoRoot },
@@ -163,7 +225,12 @@ async function listComposerConflicts(
   }
 
   const parsed = parseJson(stdout);
-  if (parsed === null) return ok([]);
+  if (parsed === null || !('dependencies' in parsed)) {
+    return unavailable(
+      `composer licenses did not produce a report: ${firstLine(stderr) ?? 'no output'}`,
+      'Check that composer.json and composer.lock are valid, then re-run.',
+    );
+  }
 
   const conflicts: Conflict[] = [];
   for (const [name, raw] of Object.entries(asRecord(parsed['dependencies']))) {
@@ -203,13 +270,18 @@ async function listNpmConflicts(
   context.log('Reading npm dependency licenses…');
 
   let stdout: string;
+  let stderr: string;
   try {
     // `npm ls` exits non-zero on peer-dependency complaints while still
     // emitting a complete tree, so the exit code is ignored.
-    ({ stdout } = await run('npm', ['ls', '--json', '--all', '--long'], {
-      cwd: context.repoRoot,
-      timeoutMs: 60_000,
-    }));
+    ({ stdout, stderr } = await run(
+      'npm',
+      ['ls', '--json', '--all', '--long'],
+      {
+        cwd: context.repoRoot,
+        timeoutMs: 60_000,
+      },
+    ));
   } catch (error) {
     if (error instanceof CommandNotFoundError) {
       return unavailable(
@@ -220,8 +292,17 @@ async function listNpmConflicts(
     throw error;
   }
 
+  // Unparseable output is not an empty tree. `npm ls` prints its tree even when
+  // it exits non-zero, so nothing on stdout means it never got that far — and a
+  // silent `ok([])` here is the same false all-clear the Composer path used to
+  // give, arrived at from the other side.
   const parsed = parseJson(stdout);
-  if (parsed === null) return ok([]);
+  if (parsed === null) {
+    return unavailable(
+      `npm ls did not produce a tree: ${firstLine(stderr) ?? 'no output'}`,
+      'Run `npm install` before scanning.',
+    );
+  }
 
   const conflicts: Conflict[] = [];
   const seen = new Set<string>();
