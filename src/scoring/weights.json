@@ -1,0 +1,7 @@
+{
+  "secrets": 0.3,
+  "dependencies": 0.25,
+  "licenses": 0.15,
+  "docs": 0.15,
+  "bus-factor": 0.15
+}
