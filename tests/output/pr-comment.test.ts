@@ -104,6 +104,70 @@ describe('renderPrComment', () => {
       );
     });
 
+    it('compares only the shared categories when coverage differs, and says so', () => {
+      // The everyday CI shape: head ran `npm ci`, so licenses is scored; the
+      // baseline is a bare worktree, so it is N/A there. Comparing the two
+      // totals would attribute the reweighting to the PR. Secrets is scored on
+      // both sides and unchanged, so the honest delta is 0 — reported as no
+      // arrow at all, not as a drop.
+      const baseline = reportOf({
+        secrets: scored(100),
+        licenses: notApplicable('node_modules is absent'),
+      });
+      const head = reportOf({
+        secrets: scored(100),
+        licenses: scored(60),
+      });
+
+      const comment = renderPrComment(head, { baseline, baseBranch: 'main' });
+
+      expect(comment).not.toContain('▼');
+      expect(comment).toContain('The delta compares only the categories');
+      expect(comment).toContain('(Secrets)');
+      // Per-category comparison is still sound, and still shown.
+      expect(comment).toContain('| Licenses | 60 | — |');
+    });
+
+    it('reports a real regression in a shared category even when coverage differs', () => {
+      const baseline = reportOf({
+        secrets: scored(100),
+        licenses: notApplicable('node_modules is absent'),
+      });
+      const head = reportOf({
+        secrets: scored(40),
+        licenses: scored(100),
+      });
+
+      // Secrets is the only shared category, so it carries the whole delta.
+      const comment = renderPrComment(head, { baseline, baseBranch: 'main' });
+      expect(comment).toContain('▼ 60 vs main');
+    });
+
+    it('shows an unqualified delta when both scans covered the same categories', () => {
+      const baseline = reportOf({
+        secrets: scored(100),
+        licenses: notApplicable('node_modules is absent'),
+      });
+      const head = reportOf({
+        secrets: scored(60),
+        licenses: notApplicable('node_modules is absent'),
+      });
+
+      const comment = renderPrComment(head, { baseline, baseBranch: 'main' });
+      expect(comment).toContain('▼ 40 vs main');
+      expect(comment).not.toContain('The delta compares only');
+    });
+
+    it('draws no comparison when the two scans share no scored category', () => {
+      const baseline = reportOf({ secrets: notApplicable('Gitleaks failed') });
+      const head = reportOf({ docs: scored(80) });
+
+      const comment = renderPrComment(head, { baseline, baseBranch: 'main' });
+      expect(comment).toContain('No category could be scored on both');
+      expect(comment).not.toContain('▼');
+      expect(comment).not.toContain('▲');
+    });
+
     it('recommends only findings this PR introduced', () => {
       // The whole point of scanning the base branch at the same moment: a CVE
       // published since the last scan appears in both reports and cancels out,

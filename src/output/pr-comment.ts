@@ -3,7 +3,11 @@ import {
   type CategoryId,
   type Finding,
 } from '../modules/types.js';
-import type { CategoryReport, Report } from '../scoring/engine.js';
+import type {
+  CategoryReport,
+  Report,
+  ScoredCategory,
+} from '../scoring/engine.js';
 
 /**
  * Identifies our comment so a subsequent run edits it instead of adding another.
@@ -54,6 +58,9 @@ export function renderPrComment(
   lines.push('');
   lines.push(...renderTable(report, options));
 
+  const note = renderComparisonNote(report, options);
+  if (note !== null) lines.push('', note);
+
   const recommendations = renderRecommendations(report, options);
   if (recommendations.length > 0) {
     lines.push('', '### Recommendations', '');
@@ -81,16 +88,121 @@ export function renderPrComment(
   return `${lines.join('\n')}\n`;
 }
 
+interface Comparison {
+  readonly delta: number;
+  /** Set when the two scans could not score the same categories. */
+  readonly sharedOnly: readonly CategoryId[] | null;
+}
+
+/**
+ * Compare two reports over the categories both of them actually scored.
+ *
+ * The two headline scores are not directly comparable unless both scans covered
+ * the same categories, because an N/A category redistributes its weight across
+ * the rest: a baseline checked out into a bare worktree has no `node_modules`,
+ * reports licenses as N/A, and so carries a different total than an identical
+ * tree with dependencies installed. Subtracting those totals reports a change
+ * the pull request did not make.
+ *
+ * Restricting both sides to the shared categories and renormalising fixes it.
+ * `effectiveWeight` is already proportional to the configured weight, so
+ * renormalising over a subset recovers the original ratios. The alternative —
+ * hiding the delta whenever coverage differs — suppressed it on the most common
+ * setup there is, a JS project that runs `npm ci` before the scan.
+ */
+function compare(report: Report, baseline: Report): Comparison | null {
+  const inBoth = CATEGORY_IDS.filter(
+    (id) =>
+      scoredCategory(report, id) !== undefined &&
+      scoredCategory(baseline, id) !== undefined,
+  );
+  if (inBoth.length === 0) return null;
+
+  const full =
+    inBoth.length === scoredCount(report) &&
+    inBoth.length === scoredCount(baseline);
+
+  // Identical coverage: the engine already rounded both totals, so subtract the
+  // published numbers rather than recomputing and risking an off-by-one against
+  // the score printed right next to it.
+  if (full) {
+    return { delta: report.score - baseline.score, sharedOnly: null };
+  }
+
+  const delta =
+    Math.round(weightedAverage(report, inBoth)) -
+    Math.round(weightedAverage(baseline, inBoth));
+
+  return { delta, sharedOnly: inBoth };
+}
+
+function weightedAverage(report: Report, ids: readonly CategoryId[]): number {
+  const categories = ids
+    .map((id) => scoredCategory(report, id))
+    .filter((category) => category !== undefined);
+
+  const totalWeight = categories.reduce(
+    (sum, category) => sum + category.effectiveWeight,
+    0,
+  );
+  if (totalWeight === 0) return 0;
+
+  return (
+    categories.reduce(
+      (sum, category) => sum + category.score * category.effectiveWeight,
+      0,
+    ) / totalWeight
+  );
+}
+
+function scoredCategory(
+  report: Report,
+  id: CategoryId,
+): ScoredCategory | undefined {
+  const category = report.categories.find((c) => c.category === id);
+  return category?.status === 'scored' ? category : undefined;
+}
+
+function scoredCount(report: Report): number {
+  return report.categories.filter((category) => category.status === 'scored')
+    .length;
+}
+
 function renderTotalDelta(report: Report, options: PrCommentOptions): string {
   if (options.baseline === undefined) return '';
 
-  const delta = report.score - options.baseline.score;
-  if (delta === 0) return '';
+  const comparison = compare(report, options.baseline);
+  if (comparison === null || comparison.delta === 0) return '';
 
   const base = options.baseBranch ?? 'the base branch';
-  return delta > 0
-    ? ` — ▲ ${delta} vs ${base}`
-    : ` — ▼ ${Math.abs(delta)} vs ${base}`;
+  const arrow =
+    comparison.delta > 0
+      ? `▲ ${comparison.delta}`
+      : `▼ ${Math.abs(comparison.delta)}`;
+
+  return ` — ${arrow} vs ${base}`;
+}
+
+/** Says so, in the comment, whenever the delta above covers less than everything. */
+function renderComparisonNote(
+  report: Report,
+  options: PrCommentOptions,
+): string | null {
+  if (options.baseline === undefined) return null;
+
+  const base = options.baseBranch ?? 'the base branch';
+  const comparison = compare(report, options.baseline);
+
+  if (comparison === null) {
+    return `_No category could be scored on both this branch and ${base}, so there is no comparison to draw._`;
+  }
+  if (comparison.sharedOnly === null) return null;
+
+  const shared = comparison.sharedOnly
+    .map((id) => CATEGORY_LABELS[id])
+    .join(', ');
+
+  return `_The delta compares only the categories both scans could score (${shared}). The rest were N/A on one side — most often \`node_modules\`, which is absent from the ${base} checkout — and an N/A category redistributes its weight, so including it would report a change this pull request did not make._`;
 }
 
 function renderTable(report: Report, options: PrCommentOptions): string[] {
