@@ -1,0 +1,10 @@
+{
+  "name": "fixture/planted-php",
+  "description": "A PHP project carrying a vulnerable dependency and a copyleft one.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "require": {
+    "guzzlehttp/guzzle": "6.5.0",
+    "acme/gpl-lib": "^1.0"
+  }
+}

@@ -1,7 +1,15 @@
-import { rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'vitest';
 import { busFactorModule } from '../../src/modules/bus-factor.js';
 import { dependenciesModule } from '../../src/modules/dependencies.js';
 import { docsModule } from '../../src/modules/docs.js';
@@ -35,9 +43,12 @@ import {
  *   their scores are asserted exactly, offline, on every machine.
  * - `secrets` needs the Gitleaks binary and `dependencies` needs the npm
  *   registry. Those are asserted too, but only where they can actually run.
+ * - the `composer` fixture needs Composer on PATH, and its audit needs
+ *   packagist.
  *
  * Skipping beats mocking here. A mocked `npm audit` would assert that this code
- * parses a recording of npm's output, which is not the thing that breaks.
+ * parses a recording of npm's output, which is not the thing that breaks. What
+ * broke, both times, was the shape of a real tool's real output.
  */
 
 const SELF_CONTAINED_MODULES: readonly ScanModule[] = [
@@ -48,21 +59,25 @@ const SELF_CONTAINED_MODULES: readonly ScanModule[] = [
 
 const registryReachable = await canReachRegistry();
 const gitleaksReady = await canRunGitleaks();
+const composerReady = await canRunComposer();
 const fullScanPossible = registryReachable && gitleaksReady;
 
 // Skipping is a developer convenience, not a CI result. A registry blip would
 // otherwise turn "the dependency tests never ran" into a green build — the same
 // "absence of a measurement is evidence of health" mistake the modules
 // themselves refuse to make.
-if (isCI() && !fullScanPossible) {
+if (isCI() && !(fullScanPossible && composerReady)) {
   throw new Error(
-    'Integration tests need the npm registry and the Gitleaks download, and CI has both. ' +
-      `Registry reachable: ${String(registryReachable)}. Gitleaks runnable: ${String(gitleaksReady)}.`,
+    'Integration tests need the npm registry, the Gitleaks download and Composer, and CI has all three. ' +
+      `Registry reachable: ${String(registryReachable)}. ` +
+      `Gitleaks runnable: ${String(gitleaksReady)}. ` +
+      `Composer runnable: ${String(composerReady)}.`,
   );
 }
 
 let cleanRoot: string;
 let plantedRoot: string;
+let composerRoot: string;
 
 /** Removed in `afterAll` even if a later fixture fails to materialise. */
 const materialised: string[] = [];
@@ -74,9 +89,10 @@ beforeAll(async () => {
     return root;
   };
 
-  [cleanRoot, plantedRoot] = await Promise.all([
+  [cleanRoot, plantedRoot, composerRoot] = await Promise.all([
     track('clean'),
     track('planted'),
+    track('composer'),
   ]);
 });
 
@@ -298,6 +314,150 @@ describe.skipIf(!registryReachable)(
   },
 );
 
+describe.skipIf(!composerReady)(
+  'the Composer ecosystem, against real Composer',
+  () => {
+    it('floors dependencies at 0 for guzzle 6.5.0', async () => {
+      const result = await dependenciesModule.scan(scanContext(composerRoot));
+      expect(result).toMatchObject({ status: 'scored', score: 0 });
+
+      const findings = result.status === 'scored' ? result.findings : [];
+      expect(
+        findings.some((finding) =>
+          finding.problem.includes('guzzlehttp/guzzle'),
+        ),
+      ).toBe(true);
+    });
+
+    it('names the fix on the branch the project is actually on', async () => {
+      // CVE-2022-31090 is affected `>=7,<7.4.5|>=4,<6.5.8`. The fixture is on
+      // 6.5.0, so 6.5.8 is the fix and 7.4.5 is a major-version jump that also
+      // happens to work. Reading the first bound out of the range — which is what
+      // the old regex did — told every guzzle-6 user to migrate to guzzle 7.
+      const result = await dependenciesModule.scan(scanContext(composerRoot));
+      const findings = result.status === 'scored' ? result.findings : [];
+
+      const fixes = findings.map((finding) => finding.fix).join('\n');
+      expect(fixes).toContain('6.5.8');
+      expect(fixes).not.toContain('7.4.5');
+    });
+
+    it('docks 25 for a copyleft PHP dependency in an MIT project', async () => {
+      const result = await licensesModule.scan(scanContext(composerRoot));
+      expect(result).toMatchObject({ status: 'scored', score: 75 });
+
+      const findings = result.status === 'scored' ? result.findings : [];
+      expect(findings).toHaveLength(1);
+
+      const [conflict] = findings;
+      expect(conflict?.severity).toBe('high');
+      expect(conflict?.problem).toContain('acme/gpl-lib');
+      expect(conflict?.problem).toContain('GPL-3.0-or-later');
+      // The two MIT packages are reached identically. Only the copyleft one counts.
+      expect(conflict?.problem).not.toContain('guzzle');
+    });
+  },
+);
+
+describe.skipIf(!composerReady)('a hostile repository cannot run code', () => {
+  // Composer fires `pre-command-run` from the target's composer.json before any
+  // subcommand, `audit` and `licenses` included. Scanning a pull request means
+  // scanning code nobody has reviewed, so a scanner that executes it is a
+  // scanner that hands the runner to whoever opened the PR. Verified against
+  // Composer 2.10.2: without `--no-scripts` this canary is written every time.
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'rhs-hostile-'));
+
+    await writeFile(
+      join(root, 'composer.json'),
+      JSON.stringify({
+        name: 'hostile/repo',
+        version: '1.0.0',
+        license: 'MIT',
+        // Relative to the scanned repository: composer runs it with cwd there.
+        scripts: { 'pre-command-run': 'touch executed-arbitrary-code' },
+      }),
+      'utf8',
+    );
+
+    await mkdir(join(root, 'vendor', 'composer'), { recursive: true });
+    await writeFile(
+      join(root, 'vendor', 'composer', 'installed.json'),
+      JSON.stringify({ packages: [], dev: false, 'dev-package-names': [] }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('does not execute composer scripts while reading licenses', async () => {
+    await licensesModule.scan(scanContext(root));
+
+    await expect(
+      access(join(root, 'executed-arbitrary-code')),
+    ).rejects.toThrow();
+  });
+});
+
+/**
+ * The two ways a Composer project reports perfect health without being scanned.
+ *
+ * Neither test needs Composer on PATH: both modules refuse before they would run
+ * it. That is the point — this is the guard, not the tool.
+ *
+ * Both were live bugs. `composer audit` without `--locked` needs `vendor/`, and
+ * on a fresh CI checkout it writes an error to stderr and nothing to stdout;
+ * `composer licenses` with nothing installed prints `"dependencies": []` and
+ * exits 0. Parsed literally, each says "no problems found", and the repo was
+ * told it scored 100 on a category nobody had looked at.
+ */
+describe('a Composer project that cannot be scanned is N/A, never 100', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await materialiseFixture('composer');
+  });
+
+  afterEach(async () => {
+    await removeFixture(root);
+  });
+
+  it('reports dependencies N/A when composer.lock is missing', async () => {
+    await rm(join(root, 'composer.lock'));
+
+    const result = await dependenciesModule.scan(scanContext(root));
+    expect(result.status).toBe('not-applicable');
+    expect(result.status === 'not-applicable' && result.reason).toContain(
+      'composer.lock',
+    );
+  });
+
+  it('reports licenses N/A when nothing is installed', async () => {
+    await rm(join(root, 'vendor'), { recursive: true, force: true });
+
+    const result = await licensesModule.scan(scanContext(root));
+    expect(result.status).toBe('not-applicable');
+    expect(result.status === 'not-applicable' && result.hint).toContain(
+      'composer install',
+    );
+  });
+
+  it('reports licenses N/A when vendor/ exists but holds nothing', async () => {
+    // An empty `vendor/` is what a failed or interrupted `composer install`
+    // leaves behind, and Composer reports it exactly as it reports a project
+    // with no dependencies at all.
+    await rm(join(root, 'vendor'), { recursive: true, force: true });
+    await mkdir(join(root, 'vendor'), { recursive: true });
+
+    const result = await licensesModule.scan(scanContext(root));
+    expect(result.status).toBe('not-applicable');
+  });
+});
+
 describe.skipIf(!fullScanPossible)(
   'the whole pipeline, all five modules',
   () => {
@@ -352,6 +512,22 @@ function scoredCategory(report: Report, id: CategoryId): ScoredCategory {
 function isCI(): boolean {
   const flag = process.env['CI'];
   return flag !== undefined && flag !== '' && flag !== 'false';
+}
+
+async function canRunComposer(): Promise<boolean> {
+  try {
+    const { exitCode } = await run(
+      'composer',
+      ['--version', '--no-interaction'],
+      {
+        cwd: tmpdir(),
+        timeoutMs: 30_000,
+      },
+    );
+    return exitCode === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** `npm audit` is the only module that talks to a network service. */

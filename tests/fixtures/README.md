@@ -1,13 +1,15 @@
 # Test fixtures
 
-Two repositories with known contents, so a scan has an expected answer to be
+Three repositories with known contents, so a scan has an expected answer to be
 wrong about. `clean` is healthy and scores an A. `planted` carries one of every
-problem the five modules look for, and scores an F.
+problem the five modules look for, and scores an F. `composer` is the same idea
+for PHP, and exists because the ecosystem this project calls first-class was the
+one ecosystem no test ever executed.
 
 They are stored here as plain file trees, not as git repositories, and
 `tests/support/fixtures.ts` materialises each one into a temporary directory
 before a test runs: it copies the tree, substitutes the planted secret, writes
-the `node_modules` stubs, and replays a scripted commit history.
+the `node_modules` and `vendor/` stubs, and replays a scripted commit history.
 
 Three details of that are not incidental.
 
@@ -40,6 +42,45 @@ on this repository — would reject the commit that introduced it.
 
 Totals: `clean` scores 100 (A). `planted` scores 17 (F) — the weights sum to
 100 only because every category is applicable.
+
+`composer` is scanned by two modules only. `dependencies` floors at 0 on
+`guzzlehttp/guzzle@6.5.0`, and `licenses` scores 75 on `acme/gpl-lib`, which is
+GPL-3.0-or-later and invented — `composer licenses` reads
+`vendor/composer/installed.json` and never asks packagist whether a package is
+real, so the fixture cannot be broken by a real package changing its license.
+
+## What the Composer fixture caught
+
+Both of Composer's paths reported a perfect score on a repository they had never
+looked at. On a fresh checkout — which is every CI checkout — `dependencies`
+returned 100 and `licenses` returned 100, with no findings and no warning.
+
+`composer audit` audits *installed* packages unless you pass `--locked`. With no
+`vendor/` it writes an error to stderr, exits 1, and prints nothing at all on
+stdout. `composer licenses` has no lockfile mode: with nothing installed it
+prints `"dependencies": []` and exits 0, which is byte-identical to a project
+that genuinely depends on nothing copyleft.
+
+Two more things Composer does quietly, both found by watching it rather than
+reading about it:
+
+- `vendor/composer/installed.json` is rejected without a `dev-package-names`
+  key, even an empty one.
+- Any package whose `install-path` directory is missing is dropped from
+  `composer licenses` output, with exit code 0 and a shorter list. This is why
+  `installVendor` creates a directory per package it declares.
+
+## These lockfiles name genuinely vulnerable packages
+
+`planted/package-lock.json` pins `lodash@4.17.4` and `composer/composer.lock`
+pins `guzzlehttp/guzzle@6.5.0`. That is the point: an advisory has to be real for
+the audit to find it.
+
+Nothing installs them — the `node_modules` and `vendor/` trees are stubs written
+at materialisation time — but GitHub's dependency graph reads any lockfile in the
+repository, wherever it sits. Dependabot alerts are currently disabled here. If
+you enable them, expect alerts against these two files, and do not "fix" them by
+bumping the pins: the fixtures would stop testing anything.
 
 ## Two things worth knowing before you edit these
 

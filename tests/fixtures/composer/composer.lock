@@ -1,0 +1,39 @@
+{
+  "_readme": [
+    "Hand-written, not produced by `composer update`.",
+    "Composer 2.10 refuses to resolve a package with a known advisory unless",
+    "policy.advisories.block is turned off, so a generated lockfile would need",
+    "the fixture to disable the very protection it exists to exercise.",
+    "`composer audit --locked` reads name and version and asks packagist; it",
+    "needs neither dist hashes nor a valid content-hash."
+  ],
+  "content-hash": "0000000000000000000000000000000000000000",
+  "packages": [
+    {
+      "name": "acme/gpl-lib",
+      "version": "1.0.0",
+      "type": "library",
+      "license": ["GPL-3.0-or-later"]
+    },
+    {
+      "name": "guzzlehttp/guzzle",
+      "version": "6.5.0",
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "guzzlehttp/psr7",
+      "version": "1.9.1",
+      "type": "library",
+      "license": ["MIT"]
+    }
+  ],
+  "packages-dev": [],
+  "aliases": [],
+  "minimum-stability": "stable",
+  "stability-flags": {},
+  "prefer-stable": false,
+  "prefer-lowest": false,
+  "platform": {},
+  "platform-dev": {}
+}

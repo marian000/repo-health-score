@@ -24,7 +24,7 @@ import { run } from '../../src/util/exec.js';
  * See `tests/fixtures/README.md` for what each fixture is expected to score.
  */
 
-export type FixtureName = 'clean' | 'planted';
+export type FixtureName = 'clean' | 'planted' | 'composer';
 
 /** Where the planted credential lands, relative to the fixture root. */
 export const PLANTED_SECRET_FILE = 'config/production.env';
@@ -54,8 +54,8 @@ interface Author {
 const ALICE: Author = { name: 'Alice Nakamura', email: 'alice@example.com' };
 const BOB: Author = { name: 'Bob Ferreira', email: 'bob@example.com' };
 
-/** The twelve tracked source files, identical in both fixtures. */
-const SOURCE_FILES: readonly string[] = [
+/** The twelve tracked source files, identical in both PHP-source fixtures. */
+const PHP_SOURCES: readonly string[] = [
   'src/Account.php',
   'src/Billing.php',
   'src/Cache.php',
@@ -71,6 +71,18 @@ const SOURCE_FILES: readonly string[] = [
 ];
 
 /**
+ * The `composer` fixture has no sources and no history on purpose: it exists to
+ * exercise `dependencies` and `licenses`, and neither reads a commit or a
+ * function. Giving it twelve files and thirty-one commits would only make it
+ * slower to materialise and harder to see what it is testing.
+ */
+const SOURCE_FILES: Readonly<Record<FixtureName, readonly string[]>> = {
+  clean: PHP_SOURCES,
+  planted: PHP_SOURCES,
+  composer: [],
+};
+
+/**
  * The files bus-factor should call critical.
  *
  * The module takes the top 20% of source files by churn: `ceil(12 × 0.2)` is
@@ -78,11 +90,17 @@ const SOURCE_FILES: readonly string[] = [
  * for every other file, so the selection is decided by churn rather than by how
  * `sort` happens to break a tie.
  */
-const CHURNED_FILES: readonly string[] = [
+const PHP_CHURNED: readonly string[] = [
   'src/Invoice.php',
   'src/Payment.php',
   'src/Router.php',
 ];
+
+const CHURNED_FILES: Readonly<Record<FixtureName, readonly string[]>> = {
+  clean: PHP_CHURNED,
+  planted: PHP_CHURNED,
+  composer: [],
+};
 
 const CHURN_COMMITS = 6;
 
@@ -96,6 +114,7 @@ const SCAFFOLD_FILES: Readonly<Record<FixtureName, readonly string[]>> = {
     'package-lock.json',
     PLANTED_SECRET_FILE,
   ],
+  composer: ['.gitignore', 'README.md', 'composer.json', 'composer.lock'],
 };
 
 /**
@@ -110,6 +129,7 @@ const SCAFFOLD_FILES: Readonly<Record<FixtureName, readonly string[]>> = {
 const SUBSTITUTED_FILES: Readonly<Record<FixtureName, readonly string[]>> = {
   clean: [],
   planted: [PLANTED_SECRET_FILE],
+  composer: [],
 };
 
 interface PackageStub {
@@ -149,6 +169,38 @@ const NODE_MODULES: Readonly<Record<FixtureName, readonly PackageStub[]>> = {
       },
     },
   ],
+  composer: [],
+};
+
+interface ComposerPackage {
+  readonly name: string;
+  readonly version: string;
+  /** Composer reports `license` as an array; a dual-licensed package lists both. */
+  readonly license: readonly string[];
+}
+
+/**
+ * The packages the materialised `vendor/` claims to contain.
+ *
+ * Stubbed rather than installed, for the same reason `node_modules` is: a real
+ * `composer install` would download three packages over the network on every
+ * test run to read four lines of metadata.
+ *
+ * `acme/gpl-lib` exists nowhere but here. `composer licenses` reads
+ * `vendor/composer/installed.json` and never asks packagist whether a package is
+ * real, so an invented copyleft dependency is enough — and it keeps the fixture
+ * from breaking the day a real package relicenses.
+ */
+const VENDOR_PACKAGES: Readonly<
+  Record<FixtureName, readonly ComposerPackage[]>
+> = {
+  clean: [],
+  planted: [],
+  composer: [
+    { name: 'acme/gpl-lib', version: '1.0.0', license: ['GPL-3.0-or-later'] },
+    { name: 'guzzlehttp/guzzle', version: '6.5.0', license: ['MIT'] },
+    { name: 'guzzlehttp/psr7', version: '1.9.1', license: ['MIT'] },
+  ],
 };
 
 /**
@@ -165,6 +217,7 @@ export async function materialiseFixture(name: FixtureName): Promise<string> {
   await assertNoPlaceholderSurvived(repoRoot);
   await buildHistory(repoRoot, name);
   await installStubs(repoRoot, NODE_MODULES[name]);
+  await installVendor(repoRoot, VENDOR_PACKAGES[name]);
 
   return repoRoot;
 }
@@ -254,7 +307,7 @@ async function buildHistory(
     'chore: scaffold the project',
   );
 
-  for (const file of SOURCE_FILES) {
+  for (const file of SOURCE_FILES[name]) {
     await commit(
       repoRoot,
       ALICE,
@@ -263,7 +316,7 @@ async function buildHistory(
     );
   }
 
-  for (const file of CHURNED_FILES) {
+  for (const file of CHURNED_FILES[name]) {
     for (let revision = 1; revision <= CHURN_COMMITS; revision++) {
       // A trailing comment: enough to make a commit, and it matches none of the
       // patterns docs uses to find a public declaration.
@@ -296,6 +349,53 @@ async function installStubs(
       'utf8',
     );
   }
+}
+
+/**
+ * Writes the `vendor/` tree `composer licenses` reads.
+ *
+ * Two details are load-bearing, both found by watching Composer stay silent:
+ *
+ * `dev-package-names` must be present, even empty. Composer rejects an
+ * `installed.json` without it.
+ *
+ * Every package's `install-path` directory must exist on disk. Composer drops
+ * any package whose directory is missing — quietly, with exit code 0 and a
+ * shorter dependency list. A fixture that skipped the `mkdir` would report no
+ * copyleft dependency and pass a test asserting the module found none.
+ */
+async function installVendor(
+  repoRoot: string,
+  packages: readonly ComposerPackage[],
+): Promise<void> {
+  if (packages.length === 0) return;
+
+  for (const composerPackage of packages) {
+    await mkdir(join(repoRoot, 'vendor', composerPackage.name), {
+      recursive: true,
+    });
+  }
+
+  const installed = {
+    packages: packages.map((composerPackage) => ({
+      name: composerPackage.name,
+      version: composerPackage.version,
+      version_normalized: `${composerPackage.version}.0`,
+      license: [...composerPackage.license],
+      type: 'library',
+      'install-path': `../${composerPackage.name}`,
+    })),
+    dev: false,
+    'dev-package-names': [],
+  };
+
+  const directory = join(repoRoot, 'vendor', 'composer');
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, 'installed.json'),
+    `${JSON.stringify(installed, null, 2)}\n`,
+    'utf8',
+  );
 }
 
 /**
