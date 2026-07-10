@@ -49,13 +49,60 @@ Without `--fail-under`, the CLI always exits 0. It is a reporter until you ask i
 
 ### Options
 
-| Flag               | Effect                                         |
-| ------------------ | ---------------------------------------------- |
-| `--fail-under <n>` | Exit 1 when the score is below `n`             |
-| `--json <file>`    | Write the full report, including every finding |
-| `--badge <file>`   | Write the badge SVG                            |
-| `--comment <file>` | Write the PR comment markdown                  |
-| `--quiet`          | Suppress progress output                       |
+| Flag               | Effect                                               |
+| ------------------ | ---------------------------------------------------- |
+| `--fail-under <n>` | Exit 1 when the score is below `n`                   |
+| `--json <file>`    | Write the full report, including every finding       |
+| `--badge <file>`   | Write the badge SVG                                  |
+| `--comment <file>` | Write the PR comment markdown                        |
+| `--base-ref <ref>` | Also scan `<ref>`, and report the comment as a delta |
+| `--quiet`          | Suppress progress output                             |
+
+## GitHub Action
+
+```yaml
+name: Repo health
+
+on: [pull_request]
+
+permissions:
+  contents: read
+  pull-requests: write # required to post the score comment
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # bus factor and the base-branch delta need history
+      - uses: marian000/repo-health-score@v0
+        with:
+          fail-under: '70'
+```
+
+On a pull request the action posts one comment and edits it in place on every
+later push, rather than adding a new one each time. The comment shows the delta
+against the base branch, which is scanned in a throwaway worktree at the same
+moment as the head — so a CVE disclosed since the base branch was last touched
+appears in both scans and cancels out, instead of being blamed on your PR.
+
+| Input        | Default              | Effect                                           |
+| ------------ | -------------------- | ------------------------------------------------ |
+| `path`       | `.`                  | Repository root to scan                          |
+| `fail-under` | _(none)_             | Fail the job below this score. Empty never fails |
+| `base-ref`   | the PR's base branch | Ref to compare against                           |
+| `comment`    | `true`               | Post the score comment on the pull request       |
+| `badge`      | _(none)_             | Write the badge SVG to this path                 |
+| `json`       | _(none)_             | Write the JSON report to this path               |
+
+Outputs `score`, `grade`, and `report` (a path to the JSON) for later steps.
+
+Two things are worth knowing before you wire this up. Without `fetch-depth: 0`
+the checkout is one commit deep, so bus factor reports N/A and the delta is
+skipped — the action warns rather than scoring from a truncated history. And a
+pull request opened from a fork gets a read-only token, so the comment cannot be
+posted; the score goes to the job summary instead of failing the run.
 
 ## What it measures
 
