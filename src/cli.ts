@@ -5,6 +5,7 @@ import { renderBadge } from './output/badge.js';
 import { renderJsonReport } from './output/json-report.js';
 import { renderPrComment } from './output/pr-comment.js';
 import { scanRepository } from './orchestrator.js';
+import { RefNotFoundError, withRefWorktree } from './util/worktree.js';
 import type { Report } from './scoring/engine.js';
 
 const USAGE = `
@@ -18,6 +19,8 @@ Options:
   --json <file>       Write the full JSON report to a file
   --badge <file>      Write the badge SVG to a file
   --comment <file>    Write the PR comment markdown to a file
+  --base-ref <ref>    Scan this ref too, and report the comment as a delta
+                      against it (e.g. origin/main). Requires full history.
   --quiet             Suppress progress output
   --help              Show this message
 
@@ -52,6 +55,7 @@ export async function main(
         json: { type: 'string' },
         badge: { type: 'string' },
         comment: { type: 'string' },
+        'base-ref': { type: 'string' },
         quiet: { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
       },
@@ -87,6 +91,21 @@ export async function main(
     return { exitCode: 2 };
   }
 
+  const baseRef = values['base-ref'];
+
+  // The baseline is a second full scan — Gitleaks over the whole tree again.
+  // Only the comment consumes it, so computing it for `--json` alone would
+  // double the runtime and discard the result.
+  if (baseRef !== undefined && values.comment === undefined) {
+    process.stderr.write(
+      '--base-ref only affects the PR comment, and --comment was not given. Skipping the baseline scan.\n',
+    );
+  }
+  const baseline =
+    baseRef === undefined || values.comment === undefined
+      ? undefined
+      : await scanBaseline(repoRoot, baseRef, log);
+
   await Promise.all([
     values.json === undefined
       ? undefined
@@ -102,7 +121,13 @@ export async function main(
       : write(values.badge, renderBadge(report)),
     values.comment === undefined
       ? undefined
-      : write(values.comment, renderPrComment(report)),
+      : write(
+          values.comment,
+          renderPrComment(report, {
+            ...(baseline === undefined ? {} : { baseline }),
+            ...(baseRef === undefined ? {} : { baseBranch: baseRef }),
+          }),
+        ),
   ]);
 
   process.stdout.write(renderSummary(report));
@@ -118,6 +143,42 @@ export async function main(
   }
 
   return { exitCode: 0, report };
+}
+
+/**
+ * Scan the base ref, in a throwaway worktree, at this same moment.
+ *
+ * Both halves of that sentence matter. A worktree keeps the user's checkout
+ * untouched, and scanning *now* rather than reusing a score stored from the
+ * last run on the base branch is what makes the delta mean "this pull request
+ * did it": a CVE published in the meantime appears in both reports and cancels
+ * out, while a dependency the branch added appears only in the head report.
+ *
+ * A baseline is a nicety. Failing the whole run because the base ref is missing
+ * — the default on a shallow CI checkout — would trade a complete report for no
+ * report at all, so this degrades to no delta and says why.
+ */
+async function scanBaseline(
+  repoRoot: string,
+  baseRef: string,
+  log: (message: string) => void,
+): Promise<Report | undefined> {
+  log(`Scanning ${baseRef} for comparison…`);
+
+  try {
+    return await withRefWorktree(repoRoot, baseRef, (worktreeRoot) =>
+      scanRepository({ repoRoot: worktreeRoot, log }),
+    );
+  } catch (error) {
+    const hint =
+      error instanceof RefNotFoundError
+        ? ' Fetch it first — in GitHub Actions, check out with `fetch-depth: 0`.'
+        : '';
+    process.stderr.write(
+      `Could not scan the base ref "${baseRef}", so the report has no delta: ${message(error)}.${hint}\n`,
+    );
+    return undefined;
+  }
 }
 
 function renderSummary(report: Report): string {
