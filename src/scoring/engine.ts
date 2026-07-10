@@ -144,6 +144,7 @@ export function calculateScore(
   };
 }
 
+/** Maps a 0-100 score to its letter grade. Boundaries are inclusive lower bounds: 90 is an A. */
 export function toGrade(score: number): Grade {
   for (const [grade, threshold] of GRADE_THRESHOLDS) {
     if (score >= threshold) return grade;

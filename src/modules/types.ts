@@ -132,7 +132,7 @@ export interface ScanModule {
   scan(context: ScanContext): Promise<CategoryResult>;
 }
 
-/** Convenience constructors — keep result shapes uniform across modules. */
+/** Builds a scored result, clamping the score into 0-100 so one module's arithmetic bug cannot skew the total. */
 export const scored = (
   score: number,
   findings: readonly Finding[] = [],
@@ -142,6 +142,13 @@ export const scored = (
   findings,
 });
 
+/**
+ * Builds a not-applicable result.
+ *
+ * `hint` is omitted rather than set to undefined, because
+ * `exactOptionalPropertyTypes` distinguishes the two and renderers check for
+ * the key's presence.
+ */
 export const notApplicable = (
   reason: string,
   hint?: string,
