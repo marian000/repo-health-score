@@ -1,5 +1,5 @@
 {
-  "name": "repo-health-score",
+  "name": "repo-vitals",
   "version": "0.1.0",
   "description": "Score any repository 0-100 on security, maintainability, and developer experience — with actionable fixes, not just numbers.",
   "keywords": [
@@ -27,7 +27,7 @@
     "node": ">=20"
   },
   "bin": {
-    "repo-health-score": "bin/cli.js"
+    "repo-vitals": "bin/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

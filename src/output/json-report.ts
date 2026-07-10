@@ -33,7 +33,7 @@ export function renderJsonReport(
       schemaVersion: REPORT_SCHEMA_VERSION,
       generatedAt: options.generatedAt,
       tool: {
-        name: 'repo-health-score',
+        name: 'repo-vitals',
         version: options.toolVersion,
         gitleaksVersion: GITLEAKS_VERSION,
       },

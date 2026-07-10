@@ -54,8 +54,8 @@ jobs:
       - name: Cache the Gitleaks binary
         uses: actions/cache@v4
         with:
-          path: ~/.cache/repo-health-score
-          key: repo-health-score-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/util/gitleaks-binary.ts') }}
+          path: ~/.cache/repo-vitals
+          key: repo-vitals-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/util/gitleaks-binary.ts') }}
 
       - run: npm ci --no-audit --no-fund
 

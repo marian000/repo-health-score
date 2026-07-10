@@ -1,11 +1,11 @@
-# Contributing to repo-health-score
+# Contributing to repo-vitals
 
 Thanks for considering a contribution. This project scores repositories on security, maintainability, and developer experience — and it holds itself to the same standard. The self-scan badge in the README is not decoration; if a change lowers our own score, that's a signal worth discussing.
 
 ## Ground rules
 
 - **Everything is in English** — code, comments, identifiers, commit messages, issues, and pull requests.
-- **Zero-config is a hard requirement.** `npx repo-health-score .` must work on a fresh checkout with no setup. A feature that only works after configuration is a bug in the default path, not a feature.
+- **Zero-config is a hard requirement.** `npx repo-vitals .` must work on a fresh checkout with no setup. A feature that only works after configuration is a bug in the default path, not a feature.
 - **Modules wrap proven tools; they don't reimplement detection.** If a mature scanner exists for what you want to check, wrap it. Write custom analysis only where no good standard tool exists.
 - **Every finding must be actionable.** Reporting "3 undocumented functions" is half the job. Say _which_ functions, in which file, and what to add. A number without a fix is not a finding.
 

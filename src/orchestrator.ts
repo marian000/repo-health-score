@@ -80,7 +80,7 @@ async function runModule(
     context.log(`  ${module.name} failed: ${detail}`);
     return notApplicable(
       `The ${module.name} module crashed: ${detail}`,
-      'This is a bug in repo-health-score. Please report it with the repository that triggered it.',
+      'This is a bug in repo-vitals. Please report it with the repository that triggered it.',
     );
   }
 }

@@ -106,8 +106,8 @@ runs:
     - name: Cache the Gitleaks binary
       uses: actions/cache@v4
       with:
-        path: ~/.cache/repo-health-score
-        key: repo-health-score-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ steps.gitleaks.outputs.version }}
+        path: ~/.cache/repo-vitals
+        key: repo-vitals-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ steps.gitleaks.outputs.version }}
 
     - name: Build the scanner
       shell: bash
@@ -206,7 +206,7 @@ runs:
         # and keep the first line. Not `| head -1`: that closes the pipe early,
         # and the resulting SIGPIPE fails the step under `pipefail`.
         ids="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-          --jq '.[] | select(.body | startswith("<!-- repo-health-score -->")) | .id')"
+          --jq '.[] | select(.body | startswith("<!-- repo-vitals -->")) | .id')"
         existing="${ids%%$'\n'*}"
 
         if [ -n "$existing" ]; then

@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { run } from './exec.js';
 
 /**
- * Gitleaks is a Go binary, not an npm package, so `npx repo-health-score .`
+ * Gitleaks is a Go binary, not an npm package, so `npx repo-vitals .`
  * cannot install it as a dependency. It is fetched on first run and cached.
  *
  * The version is pinned rather than resolved to "latest" for two reasons:
@@ -247,7 +247,7 @@ function cacheRoot(): string {
   const xdg = process.env['XDG_CACHE_HOME'];
   const base =
     xdg !== undefined && xdg !== '' ? xdg : join(homedir(), '.cache');
-  return join(base, 'repo-health-score');
+  return join(base, 'repo-vitals');
 }
 
 async function exists(path: string): Promise<boolean> {

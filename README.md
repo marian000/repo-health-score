@@ -1,4 +1,4 @@
-# repo-health-score
+# repo-vitals
 
 ![repo health](./badge.svg)
 
@@ -21,7 +21,7 @@ The PHP/Composer ecosystem is the deliberate first-class target. It is underserv
 No installation, no configuration:
 
 ```bash
-npx repo-health-score .
+npx repo-vitals .
 ```
 
 Gitleaks is a Go binary rather than an npm package, so it is downloaded on first run, checksum-verified against a digest pinned in this repository, and cached. Everything else uses the package managers already present in the repository you are scanning.
@@ -29,10 +29,10 @@ Gitleaks is a Go binary rather than an npm package, so it is downloaded on first
 ## Usage
 
 ```bash
-npx repo-health-score .                    # score the current directory
-npx repo-health-score ../other-repo        # score somewhere else
-npx repo-health-score . --fail-under 70    # exit 1 if the score drops below 70
-npx repo-health-score . --json report.json --badge badge.svg
+npx repo-vitals .                    # score the current directory
+npx repo-vitals ../other-repo        # score somewhere else
+npx repo-vitals . --fail-under 70    # exit 1 if the score drops below 70
+npx repo-vitals . --json report.json --badge badge.svg
 ```
 
 ```
