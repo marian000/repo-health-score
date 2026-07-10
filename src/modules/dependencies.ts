@@ -1,5 +1,6 @@
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
+import { COMPOSER_SANDBOX } from '../util/composer.js';
 import { ok, unavailable, type EcosystemScan } from '../util/ecosystem.js';
 import { CommandNotFoundError, run } from '../util/exec.js';
 import {
@@ -96,7 +97,7 @@ async function auditComposer(
   try {
     ({ stdout } = await run(
       'composer',
-      ['audit', '--format=json', '--no-interaction'],
+      ['audit', '--format=json', '--no-interaction', ...COMPOSER_SANDBOX],
       { cwd: context.repoRoot },
     ));
   } catch (error) {

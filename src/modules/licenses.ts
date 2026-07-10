@@ -1,5 +1,6 @@
 import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { COMPOSER_SANDBOX } from '../util/composer.js';
 import { ok, unavailable, type EcosystemScan } from '../util/ecosystem.js';
 import { CommandNotFoundError, run } from '../util/exec.js';
 import {
@@ -148,7 +149,7 @@ async function listComposerConflicts(
   try {
     ({ stdout } = await run(
       'composer',
-      ['licenses', '--format=json', '--no-interaction'],
+      ['licenses', '--format=json', '--no-interaction', ...COMPOSER_SANDBOX],
       { cwd: context.repoRoot },
     ));
   } catch (error) {
