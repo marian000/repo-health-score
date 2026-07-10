@@ -30,6 +30,21 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # The integration tests scan a fixture repository with the real Gitleaks
+      # rather than a recording of it, so the binary is fetched on a cold cache.
+      # It is verified against a pinned checksum on every run, so a poisoned
+      # cache entry fails closed and is re-downloaded.
+      #
+      # The key hashes the file that pins the version and the checksums.
+      # Without it the key never changes, and because `actions/cache` skips the
+      # save step on an exact key hit, a version bump would re-download the
+      # binary on every run forever while the stale entry sat in the cache.
+      - name: Cache the Gitleaks binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/repo-health-score
+          key: repo-health-score-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/util/gitleaks-binary.ts') }}
+
       - run: npm ci --no-audit --no-fund
 
       - run: npm run lint
