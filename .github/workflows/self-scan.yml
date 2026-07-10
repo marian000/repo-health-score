@@ -1,0 +1,118 @@
+name: Self-scan
+
+# The project scoring itself, with its own badge in its own README, is the
+# proof that the tool works. If this workflow breaks, the badge goes stale and
+# says nothing — so it is load-bearing, not decoration.
+on:
+  push:
+    branches: [main]
+    # The badge commit below pushes to main. Without this, that push retriggers
+    # this workflow, which regenerates the badge, which pushes again. The commit
+    # also carries `[skip ci]`, but paths-ignore is what stops the loop even if
+    # someone later drops that convention.
+    paths-ignore:
+      - 'badge.svg'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: self-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Score this repository
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Required by the action to post the score comment. A pull request from a
+      # fork gets a read-only token regardless; the action detects that and puts
+      # the score in the job summary instead of failing.
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Bus factor reads `git log`, and the base-branch delta checks out the
+          # base ref in a worktree. Both need real history: the default
+          # fetch-depth of 1 makes the first N/A and the second impossible.
+          fetch-depth: 0
+
+      # No setup-node or `npm ci` here: the action installs and builds itself,
+      # exactly as it does for anyone else who uses it. Running it any other way
+      # would mean the workflow that proves the tool works never exercises the
+      # path our users take.
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          badge: badge.svg
+          json: repo-health-report.json
+          # Deliberately not a gate on our own repository. We publish the score;
+          # a threshold here would only tempt us to tune the scoring until it
+          # passes, which is the exact failure this tool exists to prevent.
+          fail-under: ''
+
+      - name: Upload the report and badge
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-health-report
+          path: |
+            repo-health-report.json
+            badge.svg
+          if-no-files-found: error
+
+  badge:
+    name: Commit the badge
+    needs: scan
+    # Only ever on main. `github.event_name != 'pull_request'` would also match
+    # a workflow_dispatch against a topic branch or a tag, and push a badge
+    # commit onto a ref nobody asked to modify.
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The scan job already produced this badge. Regenerating it would mean a
+      # second full Gitleaks pass over the tree, and two scans can disagree —
+      # committing a badge that contradicts the report published beside it.
+      - name: Download the badge from the scan
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-health-report
+
+      - name: Commit the badge if the score changed
+        env:
+          # `github-actions[bot]`, matching the identity the bus-factor module
+          # already excludes from authorship — so the badge commits cannot make
+          # this repository look like it has more contributors than it does.
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- badge.svg; then
+            echo "Badge unchanged. Nothing to commit."
+            exit 0
+          fi
+
+          # Only badge.svg. The downloaded artifact also drops the JSON report
+          # into the workspace, and that belongs in the run's artifacts, not in
+          # the repository.
+          git add badge.svg
+          git commit -m 'chore(badge): update health score badge [skip ci]'
+
+          # A protected `main` rejects this push. That is a real conflict, not a
+          # transient failure: the fix is a branch-protection bypass for this
+          # workflow, or dropping the committed badge for the hosted one in v1.
+          git push origin HEAD:main
