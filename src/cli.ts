@@ -9,10 +9,10 @@ import { RefNotFoundError, withRefWorktree } from './util/worktree.js';
 import type { Report } from './scoring/engine.js';
 
 const USAGE = `
-repo-health-score — score a repository 0-100 on security, maintainability, and DX
+repo-vitals — score a repository 0-100 on security, maintainability, and DX
 
 Usage:
-  npx repo-health-score [path] [options]
+  npx repo-vitals [path] [options]
 
 Options:
   --fail-under <n>    Exit with code 1 if the score is below n (default: never fail)
