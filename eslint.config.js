@@ -40,6 +40,12 @@ export default defineConfig(
     // The npx entry point is plain JS outside the TypeScript project: it reads
     // package.json, which JSON.parse types as `any`, and uses Node globals that
     // no tsconfig lib declares here.
+    //
+    // It also imports `../dist/cli.js`, which does not exist until `npm run
+    // build`. On a fresh checkout that import resolves to nothing, so every
+    // value crossing it is untyped. Lint must not require a prior build —
+    // CONTRIBUTING tells contributors to run it on a clean clone, and CI runs
+    // it before building. `npm run typecheck` covers the real source.
     files: ['bin/*.js'],
     languageOptions: {
       globals: { process: 'readonly' },
@@ -47,6 +53,8 @@ export default defineConfig(
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
     },
   },
 );
