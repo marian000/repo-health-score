@@ -5,15 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { docsModule } from '../../src/modules/docs.js';
 import type { ScanContext } from '../../src/modules/types.js';
 import { run } from '../../src/util/exec.js';
+import { scanContext } from '../support/context.js';
 
 let repoRoot: string;
 
-const context = (): ScanContext => ({
-  repoRoot,
-  isGitRepo: true,
-  isShallowClone: false,
-  log: () => undefined,
-});
+const context = (): ScanContext => scanContext(repoRoot);
 
 async function writeFixture(path: string, content: string): Promise<void> {
   const absolute = join(repoRoot, path);

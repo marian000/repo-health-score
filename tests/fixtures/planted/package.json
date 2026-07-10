@@ -1,0 +1,10 @@
+{
+  "name": "planted-fixture",
+  "version": "1.0.0",
+  "description": "A repository with one of every planted problem. Expected to score an F.",
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "lodash": "4.17.4"
+  }
+}
