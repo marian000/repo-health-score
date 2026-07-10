@@ -32,20 +32,36 @@ jobs:
       major: ${{ steps.release.outputs.major }}
 
     steps:
+      # The default GITHUB_TOKEN cannot open a pull request unless the repository
+      # opts in, and even then GitHub raises no workflow runs from events it
+      # triggers — so a release PR opened with it carries no checks at all, and
+      # the version bump would be merged unverified. RELEASE_PLEASE_TOKEN, a PAT
+      # with contents and pull-requests write, fixes both.
+      #
+      # `secrets` cannot be read in a job-level `if`, so the guard lives here.
+      # Skipping with a warning beats failing every push to main with an error
+      # about permissions that says nothing about how to grant them.
+      - name: Check for the release token
+        id: token
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -n "${RELEASE_PLEASE_TOKEN:-}" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo '::warning title=Release skipped::Set the RELEASE_PLEASE_TOKEN secret (a PAT with contents and pull-requests write) to enable releases.'
+          fi
+
       # Pinned to a commit, not the `v4` tag: this job holds `contents: write`,
       # and a tag can be moved to point at anything by whoever owns the action.
       - name: Run release-please
         id: release
+        if: ${{ steps.token.outputs.present == 'true' }}
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
           release-type: node
-          # GitHub does not dispatch workflow runs for events raised by the
-          # default GITHUB_TOKEN, so a release pull request opened with it shows
-          # no checks at all — and the version bump gets merged unverified. A
-          # personal access token in RELEASE_PLEASE_TOKEN makes CI run on it.
-          # Without the secret this falls back and the release PR has no checks:
-          # review it by hand until the token is configured.
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
   publish:
     name: Publish to npm
