@@ -142,7 +142,7 @@ async function auditComposer(
  * `npm audit --json` against the lockfile.
  *
  * npm reports a tree where a transitive advisory repeats on every dependent.
- * Deduplicating by (package, title) means one CVE reachable through three
+ * Deduplicating by (package, advisory id) means one CVE reachable through three
  * paths is penalised once, not three times.
  */
 async function auditNpm(
@@ -207,7 +207,7 @@ async function auditNpm(
 
       const advisory = asRecord(source);
       const title = asString(advisory['title']) ?? 'Unspecified vulnerability';
-      const key = `${packageName}::${title}`;
+      const key = `${packageName}::${advisoryId(advisory) ?? title}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -236,6 +236,25 @@ function toFinding(advisory: Advisory): Finding {
       : `Upgrade \`${advisory.package}\` to a patched release, or replace it if none exists.`,
     ...pick('reference', advisory.reference),
   };
+}
+
+/**
+ * What identifies one advisory, for deduplication.
+ *
+ * Not the title. `lodash@4.17.4` carries four separate advisories all titled
+ * "Prototype Pollution in lodash" — GHSA-fvqr-27wr-82fm (moderate),
+ * GHSA-4xc9-xhrj-v574 (high), GHSA-jf85-cpcp-j695 (critical) and
+ * GHSA-p6mc-m468-83gw (high). Keying on the title folds them into whichever npm
+ * happened to list first, so the critical one vanishes from the score and from
+ * the findings, and the repo is told it is healthier than it is.
+ *
+ * `source` is npm's own advisory id; `url` is the GHSA permalink. Either is
+ * unique per advisory and stable across the dependents that reach it.
+ */
+function advisoryId(advisory: Record<string, unknown>): string | undefined {
+  const source = advisory['source'];
+  if (typeof source === 'number') return String(source);
+  return asString(advisory['url']);
 }
 
 /** npm's `fixAvailable` is `false`, `true`, or `{name, version, isSemVerMajor}`. */
