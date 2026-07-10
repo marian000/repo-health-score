@@ -76,6 +76,30 @@ runs:
         # dependencies uncached costs a few seconds; failing every consumer's
         # workflow costs rather more.
 
+    # The cache key has to change when the pinned version does. `actions/cache`
+    # skips its save step on an exact key hit, and the binary is installed under
+    # `gitleaks/<version>/`, so a fixed key would restore the old version,
+    # download the new one, and then decline to save it — on every run, forever.
+    #
+    # `hashFiles` cannot be used: it resolves relative to GITHUB_WORKSPACE, and
+    # for anyone consuming this action by name the source lives outside it.
+    - name: Read the pinned Gitleaks version
+      id: gitleaks
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        source_file="$ACTION_PATH/src/util/gitleaks-binary.ts"
+        version="$(sed -n "s/^export const GITLEAKS_VERSION = '\([^']*\)';\$/\1/p" "$source_file")"
+
+        if [ -z "$version" ]; then
+          echo "::error title=Cannot pin the cache key::No GITLEAKS_VERSION in $source_file."
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
     # Gitleaks is downloaded once and verified against a checksum committed in
     # this repository. Caching it keeps a scan off the network on every run but
     # the first; a poisoned cache entry fails verification and is re-downloaded.
@@ -83,7 +107,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/repo-health-score
-        key: repo-health-score-gitleaks-${{ runner.os }}-${{ runner.arch }}
+        key: repo-health-score-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ steps.gitleaks.outputs.version }}
 
     - name: Build the scanner
       shell: bash
