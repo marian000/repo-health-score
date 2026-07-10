@@ -30,6 +30,18 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # PHP and Composer are the first-class target, so their integration tests
+      # are not optional here. The runner image happens to ship Composer today,
+      # but "happens to" is how an ecosystem stops being tested without anyone
+      # noticing: the suite throws rather than skips when Composer is missing on
+      # CI, and this step is what keeps that from firing.
+      - name: Set up PHP and Composer
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.3'
+          tools: composer
+          coverage: none
+
       # The integration tests scan a fixture repository with the real Gitleaks
       # rather than a recording of it, so the binary is fetched on a cold cache.
       # It is verified against a pinned checksum on every run, so a poisoned

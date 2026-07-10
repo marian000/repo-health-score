@@ -87,6 +87,20 @@ jobs:
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
+      # `npm test` below refuses to skip the Composer integration tests on CI.
+      # Without this step the release fails at the last gate before publishing —
+      # correct, but for a reason that has nothing to do with the release.
+      #
+      # Pinned to a commit for the same reason release-please is, and more
+      # urgently: this job holds NPM_TOKEN and `id-token: write`. Whoever owns a
+      # mutable tag can move it, and this step runs before the token is used —
+      # far enough ahead to read it and to publish a signed tarball nobody wrote.
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.3'
+          tools: composer
+          coverage: none
+
       - run: npm ci --no-audit --no-fund
 
       # The tag is already cut, but nothing is published yet. This is the last
