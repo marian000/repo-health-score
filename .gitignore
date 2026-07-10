@@ -1,0 +1,21 @@
+# Claude Code
+.claude/
+CLAUDE.md
+skills-lock.json
+
+# Local planning docs
+docs/
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Downloaded scanner binaries (Gitleaks is fetched at runtime, never committed)
+.cache/
+
+.agents/

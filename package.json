@@ -1,0 +1,70 @@
+{
+  "name": "repo-health-score",
+  "version": "0.1.0",
+  "description": "Score any repository 0-100 on security, maintainability, and developer experience — with actionable fixes, not just numbers.",
+  "keywords": [
+    "code-quality",
+    "security",
+    "static-analysis",
+    "composer",
+    "php",
+    "github-action",
+    "cli",
+    "badge"
+  ],
+  "license": "Apache-2.0",
+  "author": "Marian Puțirac",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marian000/repo-health-score.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marian000/repo-health-score/issues"
+  },
+  "homepage": "https://github.com/marian000/repo-health-score#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "repo-health-score": "bin/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src/scoring/weights.json",
+    "src/config/default.yml"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "dev": "tsc --project tsconfig.build.json --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^4.1.10"
+  }
+}
