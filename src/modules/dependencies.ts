@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { COMPOSER_SANDBOX } from '../util/composer.js';
 import { ok, unavailable, type EcosystemScan } from '../util/ecosystem.js';
@@ -78,26 +78,81 @@ export const dependenciesModule: ScanModule = {
       0,
     );
 
-    return scored(100 - penalty, advisories.map(toFinding));
+    return scored(100 - penalty, [
+      ...advisories.map(toFinding),
+      ...scans.filter(isUnavailable).map(toSkippedFinding),
+    ]);
   },
 };
 
 /**
- * `composer audit --format=json` against the lockfile.
+ * One ecosystem could not be audited, but another could.
  *
- * Exit code 1 means "advisories found", which is the normal path here rather
- * than a failure, so the exit code is ignored in favour of parsing stdout.
+ * The category still gets a score, because a number from half the dependencies
+ * beats no number at all. What it must not do is present that number as though
+ * it covered everything: a repo carrying both a package.json and a composer.json
+ * whose npm tree happens to be clean would otherwise score 100 while its PHP
+ * dependencies were never looked at. An `info` finding costs no points and says
+ * so out loud.
+ */
+function toSkippedFinding(scan: {
+  readonly reason: string;
+  readonly hint: string;
+}): Finding {
+  return {
+    severity: 'info',
+    problem: `Not audited: ${scan.reason}`,
+    fix: scan.hint,
+  };
+}
+
+function isUnavailable<T>(
+  scan: EcosystemScan<T>,
+): scan is Extract<EcosystemScan<T>, { status: 'unavailable' }> {
+  return scan.status === 'unavailable';
+}
+
+/**
+ * `composer audit --format=json --locked` against composer.lock.
+ *
+ * `--locked` is not optional. Without it, `composer audit` audits the *installed*
+ * packages, and on a fresh checkout — which is every CI checkout — `vendor/` does
+ * not exist. Composer then writes "No installed packages found. Please run
+ * `composer install`" to stderr, exits 1, and prints **nothing on stdout**.
+ * Parsing that empty stdout yields no advisories, which is indistinguishable
+ * from a clean audit: the repo scores 100 on a quarter of its health while its
+ * PHP dependencies were never examined. Auditing the lockfile needs no `vendor/`
+ * and answers the question actually being asked.
+ *
+ * Exit code 1 means "advisories found", which is the normal path here rather than
+ * a failure, so the exit code is ignored in favour of parsing stdout. Stdout that
+ * does not parse means the audit did not run, and is reported as such — never as
+ * an empty result.
  */
 async function auditComposer(
   context: ScanContext,
 ): Promise<EcosystemScan<Advisory>> {
+  if (!(await exists(join(context.repoRoot, 'composer.lock')))) {
+    return unavailable(
+      'composer.lock is absent, so PHP dependencies could not be audited',
+      'Run `composer update` to generate composer.lock and commit it, then re-run.',
+    );
+  }
+
   context.log('Auditing Composer dependencies…');
 
   let stdout: string;
+  let stderr: string;
   try {
-    ({ stdout } = await run(
+    ({ stdout, stderr } = await run(
       'composer',
-      ['audit', '--format=json', '--no-interaction', ...COMPOSER_SANDBOX],
+      [
+        'audit',
+        '--format=json',
+        '--locked',
+        '--no-interaction',
+        ...COMPOSER_SANDBOX,
+      ],
       { cwd: context.repoRoot },
     ));
   } catch (error) {
@@ -111,7 +166,14 @@ async function auditComposer(
   }
 
   const parsed = parseJson(stdout);
-  if (parsed === null) return ok([]);
+  if (parsed === null || !('advisories' in parsed)) {
+    return unavailable(
+      `composer audit did not produce a report: ${firstLine(stderr) ?? 'no output'}`,
+      'composer audit needs network access to packagist.org. Check connectivity or proxy configuration.',
+    );
+  }
+
+  const installed = await readLockedVersions(context.repoRoot);
 
   const advisories: Advisory[] = [];
   for (const [packageName, entries] of Object.entries(
@@ -130,13 +192,46 @@ async function auditComposer(
         ),
         ...pick(
           'fixedIn',
-          firstFixedVersion(asString(advisory['affectedVersions'])),
+          nearestFixedVersion(
+            asString(advisory['affectedVersions']),
+            installed.get(packageName),
+          ),
         ),
       });
     }
   }
 
   return ok(advisories);
+}
+
+/** Every locked package's version, keyed by name. Empty if the lockfile is unreadable. */
+async function readLockedVersions(
+  repoRoot: string,
+): Promise<ReadonlyMap<string, string>> {
+  const versions = new Map<string, string>();
+
+  let parsed: Record<string, unknown> | null;
+  try {
+    parsed = parseJson(await readFile(join(repoRoot, 'composer.lock'), 'utf8'));
+  } catch {
+    return versions;
+  }
+  if (parsed === null) return versions;
+
+  for (const key of ['packages', 'packages-dev']) {
+    const entries = parsed[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const packageEntry = asRecord(entry);
+      const name = asString(packageEntry['name']);
+      const version = asString(packageEntry['version']);
+      if (name !== undefined && version !== undefined) {
+        versions.set(name, version);
+      }
+    }
+  }
+
+  return versions;
 }
 
 /**
@@ -152,8 +247,9 @@ async function auditNpm(
   context.log('Auditing npm dependencies…');
 
   let stdout: string;
+  let stderr: string;
   try {
-    ({ stdout } = await run('npm', ['audit', '--json'], {
+    ({ stdout, stderr } = await run('npm', ['audit', '--json'], {
       cwd: context.repoRoot,
     }));
   } catch (error) {
@@ -167,7 +263,12 @@ async function auditNpm(
   }
 
   const parsed = parseJson(stdout);
-  if (parsed === null) return ok([]);
+  if (parsed === null) {
+    return unavailable(
+      `npm audit did not produce a report: ${firstLine(stderr) ?? 'no output'}`,
+      'npm audit needs network access to the registry. Check connectivity or registry configuration.',
+    );
+  }
 
   // npm reports failures as an error object rather than by exit code alone.
   // The cause matters: telling an offline CI to run `npm install` sends the
@@ -267,10 +368,70 @@ function fixedVersionFromNpm(value: unknown): string | undefined {
   return fix['isSemVerMajor'] === true ? `${version} (major bump)` : version;
 }
 
-/** Composer reports affected ranges like `<2.3.0|>=3.0,<3.1.2`; the first upper bound is the fix. */
-function firstFixedVersion(affected: string | undefined): string | undefined {
+/**
+ * The smallest release that both fixes the advisory and is an upgrade.
+ *
+ * Composer states what is *affected*, not what is fixed, as a disjunction of
+ * ranges: `guzzlehttp/guzzle` CVE-2022-31090 reads `>=7,<7.4.5|>=4,<6.5.8`. Each
+ * `<` bound is therefore a release where that branch stopped being vulnerable.
+ *
+ * Taking the first bound would tell someone on 6.5.0 to upgrade to 7.4.5 — a
+ * major version jump, when 6.5.8 fixes the same CVE on the branch they are
+ * already on. Taking the smallest bound outright would tell someone on 7.0.0 to
+ * "upgrade" to 6.5.8, which is a downgrade into a different vulnerable branch.
+ * So: of the bounds that are genuinely ahead of the installed version, take the
+ * nearest one.
+ *
+ * `<=` bounds are ignored on purpose. `<=1.2.3` says 1.2.3 is itself affected,
+ * so it names no fixed release; the old regex read it as one and pointed users
+ * at a vulnerable version.
+ *
+ * @param installed the locked version, or undefined when it cannot be read — in
+ *   which case the lowest bound is the best available guess.
+ */
+function nearestFixedVersion(
+  affected: string | undefined,
+  installed: string | undefined,
+): string | undefined {
   if (affected === undefined) return undefined;
-  return /<=?\s*([\d.]+)/.exec(affected)?.[1];
+
+  const bounds = [...affected.matchAll(/<(?!=)\s*v?([\d]+(?:\.[\d]+)*)/g)]
+    .map((match) => match[1])
+    .filter((bound): bound is string => bound !== undefined)
+    .sort(compareVersions);
+
+  if (bounds.length === 0) return undefined;
+  if (installed === undefined) return bounds[0];
+
+  return bounds.find((bound) => compareVersions(bound, installed) > 0);
+}
+
+/** Numeric, segment by segment. A missing segment is 0, so `6.5` precedes `6.5.1`. */
+function compareVersions(left: string, right: string): number {
+  const l = numericSegments(left);
+  const r = numericSegments(right);
+
+  for (let index = 0; index < Math.max(l.length, r.length); index++) {
+    const difference = (l[index] ?? 0) - (r[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function numericSegments(version: string): number[] {
+  return version
+    .replace(/^v/, '')
+    .split('.')
+    .map((segment) => Number.parseInt(segment, 10))
+    .map((segment) => (Number.isNaN(segment) ? 0 : segment));
+}
+
+/** The first non-empty line, for turning a tool's stderr into a one-line reason. */
+function firstLine(text: string): string | undefined {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line !== '');
 }
 
 function normaliseSeverity(value: unknown): Severity {
