@@ -14,7 +14,7 @@ export default defineConfig(
         // Config files sit outside tsconfig's include. Without this they fail
         // with "not found by the project service" before any rule even runs.
         projectService: {
-          allowDefaultProject: ['*.js', '*.ts'],
+          allowDefaultProject: ['*.js', '*.ts', 'bin/*.js'],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -34,6 +34,19 @@ export default defineConfig(
     files: ['**/*.test.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+  {
+    // The npx entry point is plain JS outside the TypeScript project: it reads
+    // package.json, which JSON.parse types as `any`, and uses Node globals that
+    // no tsconfig lib declares here.
+    files: ['bin/*.js'],
+    languageOptions: {
+      globals: { process: 'readonly' },
+    },
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
     },
   },
 );
