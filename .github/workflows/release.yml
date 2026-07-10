@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Two runs racing to cut the same version would tag twice. Never cancel a run
+# mid-release, though: a half-published version is worse than a delayed one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Reads the Conventional Commit prefixes since the last tag and maintains a
+  # release pull request: `feat` bumps the minor, `fix` the patch, and a `!` or
+  # a `BREAKING CHANGE:` footer the major. Merging that PR cuts the release.
+  # This is why the commit convention is load-bearing rather than cosmetic.
+  prepare:
+    name: Prepare the release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    outputs:
+      released: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      major: ${{ steps.release.outputs.major }}
+
+    steps:
+      # Pinned to a commit, not the `v4` tag: this job holds `contents: write`,
+      # and a tag can be moved to point at anything by whoever owns the action.
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          release-type: node
+          # GitHub does not dispatch workflow runs for events raised by the
+          # default GITHUB_TOKEN, so a release pull request opened with it shows
+          # no checks at all — and the version bump gets merged unverified. A
+          # personal access token in RELEASE_PLEASE_TOKEN makes CI run on it.
+          # Without the secret this falls back and the release PR has no checks:
+          # review it by hand until the token is configured.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+
+  publish:
+    name: Publish to npm
+    needs: prepare
+    if: ${{ needs.prepare.outputs.released == 'true' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # npm provenance: the published package is signed against this workflow
+      # run, so consumers can verify which commit produced the tarball.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci --no-audit --no-fund
+
+      # The tag is already cut, but nothing is published yet. This is the last
+      # point at which a broken release costs nothing to abandon.
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::warning title=Not published::NPM_TOKEN is not set, so the release was tagged but not published to npm."
+            exit 0
+          fi
+
+          npm publish --provenance --access public
+
+  # Consumers pin the action as `marian000/repo-health-score@v1`. That tag has
+  # to follow the releases, or every consumer stays on the first v1.0.0 forever.
+  major-tag:
+    name: Move the major version tag
+    needs: prepare
+    if: ${{ needs.prepare.outputs.released == 'true' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Retag
+        env:
+          MAJOR: ${{ needs.prepare.outputs.major }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          # A moving major tag is the documented Actions convention, and the
+          # only force-push in this repository. It rewrites no commit history:
+          # the immutable `vX.Y.Z` tag from the release above always remains.
+          git tag -fa "v$MAJOR" -m "Release v$MAJOR"
+          git push --force origin "v$MAJOR"
