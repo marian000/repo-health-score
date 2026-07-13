@@ -3,3 +3,7 @@ coverage/
 node_modules/
 tests/fixtures/
 *.svg
+
+# Generated and owned by release-please; its format is not ours to enforce.
+CHANGELOG.md
+.release-please-manifest.json
