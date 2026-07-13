@@ -15,7 +15,7 @@ import type {
  * A PR that gets fifteen pushes should not accumulate fifteen score comments.
  * The Action greps open comments for this marker and PATCHes the match.
  */
-export const COMMENT_MARKER = '<!-- repo-health-score -->';
+export const COMMENT_MARKER = '<!-- repo-vitals -->';
 
 /** Findings shown under "Recommendations" before the list is truncated. */
 const MAX_RECOMMENDATIONS = 10;
