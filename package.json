@@ -1,6 +1,6 @@
 {
   "name": "repo-health-score",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Score any repository 0-100 on security, maintainability, and developer experience — with actionable fixes, not just numbers.",
   "keywords": [
     "code-quality",
